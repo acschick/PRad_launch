@@ -196,15 +196,27 @@ def add_job(WORKFLOW, filepath, input_dir, config_dict):
     # Tags
     add_command += f" -tag run_number {RUNNO} -tag file_number {FILENO}"
     
-    # The command to run: source environment, create output dir, then run replay
+    # The command to run: handle environment setup based on file type
     # Note: SWIF2 stages the input file in the local scratch directory
     # We need to make sure the output directory exists
-    command = f"source {config_dict['ENVFILE']} && "
-    command += f"mkdir -p {OUTDIR_RUN} && "
-    command += f"{config_dict['REPLAY_EXEC']} {FILENAME} "
-    command += f"-j {config_dict['NCORES']} "
-    command += f"-z {config_dict['ZVERTEX_CUT']} "
-    command += f"-o {OUTDIR_RUN}/"
+    
+    # Check if environment file is csh/tcsh
+    if config_dict['ENVFILE'].endswith('.csh'):
+        # Use tcsh to source csh files
+        command = f"tcsh -c 'source {config_dict['ENVFILE']} && "
+        command += f"mkdir -p {OUTDIR_RUN} && "
+        command += f"{config_dict['REPLAY_EXEC']} {FILENAME} "
+        command += f"-j {config_dict['NCORES']} "
+        command += f"-z {config_dict['ZVERTEX_CUT']} "
+        command += f"-o {OUTDIR_RUN}/'"
+    else:
+        # Assume bash/sh syntax
+        command = f"source {config_dict['ENVFILE']} && "
+        command += f"mkdir -p {OUTDIR_RUN} && "
+        command += f"{config_dict['REPLAY_EXEC']} {FILENAME} "
+        command += f"-j {config_dict['NCORES']} "
+        command += f"-z {config_dict['ZVERTEX_CUT']} "
+        command += f"-o {OUTDIR_RUN}/"
     
     add_command += f" {command}"
     
