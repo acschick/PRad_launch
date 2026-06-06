@@ -235,32 +235,77 @@ def main(argv):
     global VERBOSE
     
     # PARSER
-    parser_usage = "prad_launch.py config_file minrun maxrun\n\n"
+    parser_usage = "prad_launch.py config_file minrun maxrun\n"
+    parser_usage += "       OR\n"
+    parser_usage += "       prad_launch.py config_file --runfile runs.txt\n\n"
     parser_usage += "Create SWIF2 workflow for PRad2 replay jobs\n\n"
     parser_usage += "optional: -v: verbose output\n"
     parser_usage += "optional: --create-only: create workflow but don't submit\n"
+    parser_usage += "optional: --runfile FILE: process runs listed in FILE (one per line)\n"
     parser = OptionParser(usage=parser_usage)
     
     # PARSER OPTIONS
     parser.add_option("-v", "--verbose", dest="verbose", action="store_true", help="verbose output")
     parser.add_option("--create-only", dest="create_only", action="store_true", 
                      help="create workflow but don't submit")
+    parser.add_option("--runfile", dest="runfile", help="text file with run numbers (one per line)")
     
     # GET ARGUMENTS
     (options, args) = parser.parse_args(argv)
-    if len(args) < 3:
-        parser.print_help()
-        return
     
-    # SET INPUT VARIABLES
-    CONFIG_FILE = args[0]
-    MINRUN = int(args[1])
-    MAXRUN = int(args[2])
+    # Determine run list - either from file or from range
+    run_list = []
+    CONFIG_FILE = None
+    
+    if options.runfile:
+        # Using runfile - need at least config file
+        if len(args) < 1:
+            parser.print_help()
+            return
+        
+        CONFIG_FILE = args[0]
+        
+        # Read run numbers from file
+        try:
+            with open(options.runfile, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        try:
+                            run_list.append(int(line))
+                        except ValueError:
+                            print(f"Warning: Skipping invalid run number: {line}")
+            
+            if len(run_list) == 0:
+                print(f"ERROR: No valid run numbers found in {options.runfile}")
+                return
+            
+            print(f"Loaded {len(run_list)} runs from {options.runfile}")
+        
+        except IOError as e:
+            print(f"ERROR: Could not read runfile {options.runfile}: {e}")
+            return
+    else:
+        # Using run range - need config, minrun, maxrun
+        if len(args) < 3:
+            parser.print_help()
+            return
+        
+        CONFIG_FILE = args[0]
+        MINRUN = int(args[1])
+        MAXRUN = int(args[2])
+        run_list = list(range(MINRUN, MAXRUN + 1))
+    
     VERBOSE = options.verbose if options.verbose else False
     
     print(f"PRad2 Replay Launcher")
     print(f"Config file: {CONFIG_FILE}")
-    print(f"Run range: {MINRUN} - {MAXRUN}")
+    if options.runfile:
+        print(f"Run list from file: {options.runfile} ({len(run_list)} runs)")
+        if VERBOSE and len(run_list) <= 20:
+            print(f"  Runs: {sorted(run_list)}")
+    else:
+        print(f"Run range: {min(run_list)} - {max(run_list)}")
     
     # READ CONFIG
     config_dict = read_config(CONFIG_FILE)
@@ -279,7 +324,7 @@ def main(argv):
     
     # FIND & ADD JOBS
     total_jobs = 0
-    for RUN in range(MINRUN, MAXRUN + 1):
+    for RUN in run_list:
         FORMATTED_RUN = f"{RUN:06d}"
         
         print(f"\nProcessing run {FORMATTED_RUN}")
