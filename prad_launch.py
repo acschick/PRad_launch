@@ -94,8 +94,13 @@ def validate_config(config_dict):
         sys.exit(1)
 
     # ENVIRONMENT AND EXECUTABLES
-    if ("ENVFILE" not in config_dict) or ("REPLAY_EXEC" not in config_dict):
-        print("ERROR: ENVIRONMENT/EXECUTABLES NOT FULLY SPECIFIED IN CONFIG FILE. ABORTING")
+    if ("ENVFILE" not in config_dict):
+        print("ERROR: ENVIRONMENT NOT FULLY SPECIFIED IN CONFIG FILE. ABORTING")
+        sys.exit(1)
+    
+    # Check for either REPLAY_EXEC or FILTER_EXEC
+    if ("REPLAY_EXEC" not in config_dict) and ("FILTER_EXEC" not in config_dict):
+        print("ERROR: Must specify either REPLAY_EXEC or FILTER_EXEC in config file. ABORTING")
         sys.exit(1)
 
     # FILE INPUT, OUTPUT BASE DIRECTORIES
@@ -109,8 +114,12 @@ def validate_config(config_dict):
         print(f"ERROR: ENVFILE does not exist: {config_dict['ENVFILE']}")
         sys.exit(1)
     
-    if not os.path.isfile(config_dict["REPLAY_EXEC"]):
+    if "REPLAY_EXEC" in config_dict and not os.path.isfile(config_dict["REPLAY_EXEC"]):
         print(f"ERROR: REPLAY_EXEC does not exist: {config_dict['REPLAY_EXEC']}")
+        sys.exit(1)
+    
+    if "FILTER_EXEC" in config_dict and not os.path.isfile(config_dict["FILTER_EXEC"]):
+        print(f"ERROR: FILTER_EXEC does not exist: {config_dict['FILTER_EXEC']}")
         sys.exit(1)
 
     # CHECK OUTPUT (SMALL) FOLDER EXISTENCE - create if needed
@@ -123,8 +132,8 @@ def validate_config(config_dict):
 
 ####################################################### FIND FILES #######################################################
 
-def find_files(input_dir):
-    """Find .evio files in input directory (works for both MSS and disk)"""
+def find_files(input_dir, mode="replay"):
+    """Find files in input directory - .evio for replay, .root for filter"""
     
     # MSS is a filesystem representation of tape, so ls/glob work fine
     if not os.path.isdir(input_dir):
@@ -132,7 +141,11 @@ def find_files(input_dir):
             print(f"  Directory does not exist: {input_dir}")
         return []
     
-    pathstring = f"{input_dir}/prad_*.evio.*"
+    if mode == "filter":
+        pathstring = f"{input_dir}/*.root"
+    else:
+        pathstring = f"{input_dir}/prad_*.evio.*"
+    
     files = sorted(glob.glob(pathstring))
     
     if VERBOSE and len(files) > 0:
@@ -197,21 +210,26 @@ def add_job(WORKFLOW, filepath, input_dir, config_dict):
     add_command += f" -tag run_number {RUNNO} -tag file_number {FILENO}"
     
     # The command to run: handle environment setup based on file type
-    # Note: SWIF2 stages the input file in the local scratch directory
-    # We need to make sure the output directory exists
+    # Note: SWIF2 stages the input file in the local scratch directory (usually $PWD)
+    # We need to make sure we're working in that directory
     
     # Check if environment file is csh/tcsh
     if config_dict['ENVFILE'].endswith('.csh'):
-        # Use tcsh to source csh files
-        command = f"tcsh -c 'source {config_dict['ENVFILE']} && "
+        # Use tcsh to source csh files - make sure we're in the right directory
+        command = f"tcsh -c 'cd $PWD && "
+        command += f"echo \"Working directory: $PWD\" && "
+        command += f"echo \"Files present:\" && ls -lh {FILENAME} && "
+        command += f"source {config_dict['ENVFILE']} && "
         command += f"mkdir -p {OUTDIR_RUN} && "
-        command += f"{config_dict['REPLAY_EXEC']} {FILENAME} "
+        command += f"{config_dict['REPLAY_EXEC']} $PWD/{FILENAME} "
         command += f"-j {config_dict['NCORES']} "
         command += f"-z {config_dict['ZVERTEX_CUT']} "
         command += f"-o {OUTDIR_RUN}/'"
     else:
         # Assume bash/sh syntax
-        command = f"source {config_dict['ENVFILE']} && "
+        command = f"echo \"Working directory: $PWD\" && "
+        command += f"echo \"Files present:\" && ls -lh {FILENAME} && "
+        command += f"source {config_dict['ENVFILE']} && "
         command += f"mkdir -p {OUTDIR_RUN} && "
         command += f"{config_dict['REPLAY_EXEC']} {FILENAME} "
         command += f"-j {config_dict['NCORES']} "
@@ -229,6 +247,156 @@ def add_job(WORKFLOW, filepath, input_dir, config_dict):
         print(f"  Added job: {JOBNAME}")
     return success
 
+def add_job_batch(WORKFLOW, filepaths, input_dir, RUN, batch_idx, config_dict):
+    """Add a batched replay job to the workflow - processes multiple files in one job"""
+    
+    if len(filepaths) == 0:
+        return False
+    
+    RUNNO = f"{RUN:06d}"
+    
+    # Job name includes batch index
+    JOBNAME = f"{WORKFLOW}_run{RUNNO}_batch{batch_idx:03d}"
+    
+    # Determine input type (mss or file)
+    input_type = "mss" if input_dir.startswith("/mss/") else "file"
+    
+    # Setup output directory for this run
+    OUTDIR_RUN = os.path.join(config_dict["OUTDIR_LARGE"], RUNNO)
+    
+    # Setup log directory
+    LOG_DIR = os.path.join(config_dict["OUTDIR_SMALL"], "log", RUNNO)
+    os.makedirs(LOG_DIR, exist_ok=True)
+    
+    # Create the add-job command
+    add_command = f"swif2 add-job -workflow {WORKFLOW} -name {JOBNAME}"
+    
+    # Job accounting
+    add_command += f" -account {config_dict['PROJECT']}"
+    add_command += f" -partition {config_dict['TRACK']}"
+    add_command += f" -os {config_dict['OS']}"
+    
+    # Resources (may need more disk/RAM for batched jobs)
+    add_command += f" -cores {config_dict['NCORES']}"
+    add_command += f" -disk {config_dict['DISK']}"
+    add_command += f" -ram {config_dict['RAM']}"
+    add_command += f" -time {config_dict['TIMELIMIT']}"
+    
+    # Add all files as inputs (SWIF2 will stage them all)
+    for filepath in filepaths:
+        filename = os.path.basename(filepath)
+        add_command += f" -input {filename} {input_type}:{filepath}"
+    
+    # Stdout, stderr
+    add_command += f" -stdout {LOG_DIR}/stdout_{RUNNO}_batch{batch_idx:03d}.out"
+    add_command += f" -stderr {LOG_DIR}/stderr_{RUNNO}_batch{batch_idx:03d}.err"
+    
+    # Tags
+    add_command += f" -tag run_number {RUNNO} -tag batch_index {batch_idx} -tag num_files {len(filepaths)}"
+    
+    # The command to run: loop over all files in the batch
+    # Build a list of just filenames (they'll be staged locally by SWIF2)
+    filenames = [os.path.basename(fp) for fp in filepaths]
+    filenames_str = \" \".join(filenames)
+    
+    # Check if environment file is csh/tcsh
+    if config_dict['ENVFILE'].endswith('.csh'):
+        # Use tcsh to source csh files
+        command = f\"tcsh -c 'cd $PWD && \"
+        command += f\"echo \\\"Working directory: $PWD\\\" && \"
+        command += f\"echo \\\"Files to process: {len(filenames)}\\\" && \"
+        command += f\"ls -lh prad*.evio.* && \"
+        command += f\"source {config_dict['ENVFILE']} && \"
+        command += f\"mkdir -p {OUTDIR_RUN} && \"
+        # Process each file
+        command += f\"foreach file ( {filenames_str} ); \"
+        command += f\"echo \\\"Processing $file\\\" && \"
+        command += f\"{config_dict['REPLAY_EXEC']} $PWD/$file \"
+        command += f\"-j {config_dict['NCORES']} \"
+        command += f\"-z {config_dict['ZVERTEX_CUT']} \"
+        command += f\"-o {OUTDIR_RUN}/ && \"
+        command += f\"echo \\\"Completed $file\\\"; \"
+        command += f\"end'\"
+    else:
+        # Assume bash/sh syntax
+        command = f\"echo \\\"Working directory: $PWD\\\" && \"
+        command += f\"echo \\\"Files to process: {len(filenames)}\\\" && \"
+        command += f\"ls -lh prad*.evio.* && \"
+        command += f\"source {config_dict['ENVFILE']} && \"
+        command += f\"mkdir -p {OUTDIR_RUN} && \"
+        # Process each file
+        command += f\"for file in {filenames_str}; do \"
+        command += f\"echo \\\"Processing $file\\\" && \"
+        command += f\"{config_dict['REPLAY_EXEC']} $file \"
+        command += f\"-j {config_dict['NCORES']} \"
+        command += f\"-z {config_dict['ZVERTEX_CUT']} \"
+        command += f\"-o {OUTDIR_RUN}/ && \"
+        command += f\"echo \\\"Completed $file\\\"; \"
+        command += f\"done\"
+    
+    add_command += f\" {command}\"
+    
+    if VERBOSE:
+        print(f\"  Batch job command (first 200 chars):\\n  {add_command[:200]}...\")
+    
+    # ADD JOB
+    success = try_command(add_command)
+    if success:
+        print(f\"  Added batch job: {JOBNAME} ({len(filepaths)} files)\")
+    return success
+def add_filter_job(WORKFLOW, RUN, root_files, input_dir, config_dict):
+    """Add filter job for one run - merges ROOT files then filters"""
+    
+    RUNNO = f"{RUN:06d}"
+    JOBNAME = f"{WORKFLOW}_run{RUNNO}"
+    
+    OUTDIR_RUN = os.path.join(config_dict["OUTDIR_LARGE"], RUNNO)
+    LOG_DIR = os.path.join(config_dict["OUTDIR_SMALL"], "log", RUNNO)
+    os.makedirs(LOG_DIR, exist_ok=True)
+    
+    MERGED_FILE = f"prad_{RUNNO}_merged.root"
+    FILTERED_FILE = f"prad_{RUNNO}_filtered.root"
+    
+    add_command = f"swif2 add-job -workflow {WORKFLOW} -name {JOBNAME}"
+    add_command += f" -account {config_dict['PROJECT']}"
+    add_command += f" -partition {config_dict['TRACK']}"
+    add_command += f" -os {config_dict['OS']}"
+    add_command += f" -cores {config_dict['NCORES']}"
+    add_command += f" -disk {config_dict['DISK']}"
+    add_command += f" -ram {config_dict['RAM']}"
+    add_command += f" -time {config_dict['TIMELIMIT']}"
+    
+    # Add all ROOT files as inputs
+    for root_file in root_files:
+        filename = os.path.basename(root_file)
+        add_command += f" -input {filename} file:{root_file}"
+    
+    add_command += f" -stdout {LOG_DIR}/stdout_{RUNNO}.out"
+    add_command += f" -stderr {LOG_DIR}/stderr_{RUNNO}.err"
+    add_command += f" -tag run_number {RUNNO} -tag num_input_files {len(root_files)}"
+    
+    input_filenames = " ".join([os.path.basename(f) for f in root_files])
+    
+    if config_dict['ENVFILE'].endswith('.csh'):
+        command = f"tcsh -c 'cd $PWD && "
+        command += f"source {config_dict['ENVFILE']} && "
+        command += f"mkdir -p {OUTDIR_RUN} && "
+        command += f"hadd -f {MERGED_FILE} {input_filenames} && "
+        command += f"{config_dict['FILTER_EXEC']} {MERGED_FILE} -o {OUTDIR_RUN}/{FILTERED_FILE} && "
+        command += f"cp {MERGED_FILE} {OUTDIR_RUN}/'"
+    else:
+        command = f"source {config_dict['ENVFILE']} && "
+        command += f"mkdir -p {OUTDIR_RUN} && "
+        command += f"hadd -f {MERGED_FILE} {input_filenames} && "
+        command += f"{config_dict['FILTER_EXEC']} {MERGED_FILE} -o {OUTDIR_RUN}/{FILTERED_FILE} && "
+        command += f"cp {MERGED_FILE} {OUTDIR_RUN}/"
+    
+    add_command += f" {command}"
+    
+    success = try_command(add_command)
+    if success:
+        print(f"  Added filter job: {JOBNAME} ({len(root_files)} files)")
+    return success
 ########################################################## MAIN ##########################################################
 
 def main(argv):
@@ -238,7 +406,8 @@ def main(argv):
     parser_usage = "prad_launch.py config_file minrun maxrun\n"
     parser_usage += "       OR\n"
     parser_usage += "       prad_launch.py config_file --runfile runs.txt\n\n"
-    parser_usage += "Create SWIF2 workflow for PRad2 replay jobs\n\n"
+    parser_usage += "Create SWIF2 workflow for PRad2 replay or filter jobs\n"
+    parser_usage += "Mode is auto-detected from config (REPLAY_EXEC=replay, FILTER_EXEC=filter)\n\n"
     parser_usage += "optional: -v: verbose output\n"
     parser_usage += "optional: --create-only: create workflow but don't submit\n"
     parser_usage += "optional: --runfile FILE: process runs listed in FILE (one per line)\n"
@@ -298,7 +467,7 @@ def main(argv):
     
     VERBOSE = options.verbose if options.verbose else False
     
-    print(f"PRad2 Replay Launcher")
+    print(f"PRad2 Launcher")
     print(f"Config file: {CONFIG_FILE}")
     if options.runfile:
         print(f"Run list from file: {options.runfile} ({len(run_list)} runs)")
@@ -314,6 +483,15 @@ def main(argv):
     # SET CONTROL VARIABLES
     WORKFLOW = config_dict["WORKFLOW"]
     INDATA_TOPDIR = config_dict["INDATA_TOPDIR"]
+    FILES_PER_JOB = int(config_dict.get("FILES_PER_JOB", "1"))
+    
+    # Detect mode: replay or filter
+    MODE = "filter" if "FILTER_EXEC" in config_dict else "replay"
+    print(f"\nMode: {MODE.upper()}")
+    
+    if VERBOSE:
+        if MODE == "replay":
+            print(f"Files per job: {FILES_PER_JOB}")
     
     # CREATE WORKFLOW
     print(f"\nCreating SWIF2 workflow: {WORKFLOW}")
@@ -330,25 +508,45 @@ def main(argv):
         print(f"\nProcessing run {FORMATTED_RUN}")
         
         # Input directory path
-        input_dir = f"{INDATA_TOPDIR}/prad_{FORMATTED_RUN}"
+        input_dir = f"{INDATA_TOPDIR}/prad_{FORMATTED_RUN}" if MODE == "replay" else f"{INDATA_TOPDIR}/{FORMATTED_RUN}"
         print(f"  Input directory: {input_dir}")
         
-        # Determine if this is MSS (tape) or disk
-        is_mss = input_dir.startswith("/mss/")
-        input_type = "mss" if is_mss else "file"
-        print(f"  Input type: {input_type}")
-        
-        # Find files
-        file_list = find_files(input_dir)
-        print(f"  Found {len(file_list)} files")
-        
-        if len(file_list) == 0:
-            print(f"  WARNING: No files found for run {FORMATTED_RUN}")
-            continue
-        
-        # Add a job for each file
-        for filepath in file_list:
-            if add_job(WORKFLOW, filepath, input_dir, config_dict):
+        if MODE == "replay":
+            # Determine if this is MSS (tape) or disk
+            is_mss = input_dir.startswith("/mss/")
+            input_type = "mss" if is_mss else "file"
+            print(f"  Input type: {input_type}")
+            
+            # Find files
+            file_list = find_files(input_dir, mode="replay")
+            print(f"  Found {len(file_list)} files")
+            
+            if len(file_list) == 0:
+                print(f"  WARNING: No files found for run {FORMATTED_RUN}")
+                continue
+            
+            # Batch files
+            file_batches = [file_list[i:i+FILES_PER_JOB] for i in range(0, len(file_list), FILES_PER_JOB)]
+            print(f"  Creating {len(file_batches)} job(s) ({FILES_PER_JOB} files/job)")
+            
+            # Add a job for each batch
+            for batch_idx, batch in enumerate(file_batches):
+                if add_job_batch(WORKFLOW, batch, input_dir, RUN, batch_idx, config_dict):
+                    total_jobs += 1
+        else:
+            # Filter mode: one job per run
+            if not os.path.isdir(input_dir):
+                print(f"  WARNING: Directory not found, skipping")
+                continue
+            
+            root_files = find_files(input_dir, mode="filter")
+            print(f"  Found {len(root_files)} ROOT files")
+            
+            if len(root_files) == 0:
+                print(f"  WARNING: No ROOT files found")
+                continue
+            
+            if add_filter_job(WORKFLOW, RUN, root_files, input_dir, config_dict):
                 total_jobs += 1
     
     print(f"\n{'='*60}")
