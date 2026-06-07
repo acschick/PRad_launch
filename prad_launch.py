@@ -56,6 +56,7 @@ def try_command(command, sleeptime=5):
 def read_config(CONFIG_FILENAME):
     """Read in user config file"""
     config_dict = {}
+    config_dir = os.path.dirname(os.path.abspath(CONFIG_FILENAME))
 
     with open(CONFIG_FILENAME, 'r') as infile_config:
         for line in infile_config:
@@ -70,6 +71,23 @@ def read_config(CONFIG_FILENAME):
             config_dict[key] = value
             if VERBOSE:
                 print(f"CONFIG: {key} = {value}")
+
+    config_dict = resolve_config_paths(config_dict, config_dir)
+    return config_dict
+
+def resolve_config_paths(config_dict, config_dir):
+    """Resolve relative paths for files shipped with or referenced by the config"""
+    path_keys = ["ENVFILE", "CUTS_JSON", "DAQ_CONFIG", "GEM_PED"]
+
+    for key in path_keys:
+        if key not in config_dict:
+            continue
+
+        path = os.path.expanduser(config_dict[key])
+        if not os.path.isabs(path):
+            path = os.path.join(config_dir, path)
+
+        config_dict[key] = os.path.abspath(path)
 
     return config_dict
 
@@ -120,6 +138,18 @@ def validate_config(config_dict):
 
     if "FILTER_EXEC" in config_dict and not os.path.isfile(config_dict["FILTER_EXEC"]):
         print(f"ERROR: FILTER_EXEC does not exist: {config_dict['FILTER_EXEC']}")
+        sys.exit(1)
+
+    if "CUTS_JSON" in config_dict and not os.path.isfile(config_dict["CUTS_JSON"]):
+        print(f"ERROR: CUTS_JSON does not exist: {config_dict['CUTS_JSON']}")
+        sys.exit(1)
+
+    if "DAQ_CONFIG" in config_dict and not os.path.isfile(config_dict["DAQ_CONFIG"]):
+        print(f"ERROR: DAQ_CONFIG does not exist: {config_dict['DAQ_CONFIG']}")
+        sys.exit(1)
+
+    if "GEM_PED" in config_dict and not os.path.isfile(config_dict["GEM_PED"]):
+        print(f"ERROR: GEM_PED does not exist: {config_dict['GEM_PED']}")
         sys.exit(1)
 
     # CHECK OUTPUT (SMALL) FOLDER EXISTENCE - create if needed
