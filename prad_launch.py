@@ -51,6 +51,45 @@ def try_command(command, sleeptime=5):
 
     return True
 
+def create_workflow(WORKFLOW, sleeptime=5):
+    """Create SWIF2 workflow, or continue if it already exists"""
+    create_command = f"swif2 create -workflow {WORKFLOW}"
+    status_command = f"swif2 status -workflow {WORKFLOW}"
+    max_retries = 3
+    retries = 0
+
+    while retries < max_retries:
+        process = Popen(create_command.split(), stdout=PIPE, stderr=PIPE)
+        output, error = process.communicate()
+        if output:
+            print(output.decode())
+        if error and VERBOSE:
+            print(error.decode())
+
+        if process.returncode == 0:
+            return True
+
+        # If create failed because the workflow already exists, status should work.
+        status_process = Popen(status_command.split(), stdout=PIPE, stderr=PIPE)
+        status_output, status_error = status_process.communicate()
+        if status_process.returncode == 0:
+            print(f"Workflow already exists: {WORKFLOW}")
+            print("Adding jobs to existing workflow")
+            return True
+
+        retries += 1
+        if retries < max_retries:
+            print(f'Command failed (attempt {retries}/{max_retries}), sleeping for {sleeptime} sec...')
+            time.sleep(sleeptime)
+
+    print(f"ERROR: Command failed after {max_retries} attempts")
+    print(f"Command: {create_command}")
+    if error:
+        print(error.decode())
+    if status_error:
+        print(status_error.decode())
+    return False
+
 ####################################################### READ CONFIG ######################################################
 
 def read_config(CONFIG_FILENAME):
@@ -557,8 +596,7 @@ def main(argv):
 
     # CREATE WORKFLOW
     print(f"\nCreating SWIF2 workflow: {WORKFLOW}")
-    create_workflow_cmd = f"swif2 create -workflow {WORKFLOW}"
-    if not try_command(create_workflow_cmd):
+    if not create_workflow(WORKFLOW):
         print("ERROR: Failed to create workflow")
         sys.exit(1)
 
