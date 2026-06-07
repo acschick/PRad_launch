@@ -377,7 +377,7 @@ def add_job_batch(WORKFLOW, filepaths, input_dir, RUN, batch_idx, config_dict):
         print(f"  Added batch job: {JOBNAME} ({len(filepaths)} files)")
     return success
 def add_filter_job(WORKFLOW, RUN, root_files, input_dir, config_dict):
-    """Add filter job for one run - merges ROOT files then filters"""
+    """Add filter job for one run - filters replay ROOT files directly"""
 
     RUNNO = f"{RUN:06d}"
     JOBNAME = f"{WORKFLOW}_run{RUNNO}"
@@ -386,9 +386,10 @@ def add_filter_job(WORKFLOW, RUN, root_files, input_dir, config_dict):
     LOG_DIR = os.path.join(config_dict["OUTDIR_SMALL"], "log", RUNNO)
     os.makedirs(LOG_DIR, exist_ok=True)
 
-    MERGED_FILE = f"prad_{RUNNO}_merged.root"
     FILTERED_FILE = f"prad_{RUNNO}_filtered.root"
+    FILTER_INPUTS = f"prad_{RUNNO}.*_recon.root"
     filter_options = get_filter_options(config_dict)
+    input_type = "mss" if input_dir.startswith("/mss/") else "file"
 
     add_command = f"swif2 add-job -workflow {WORKFLOW} -name {JOBNAME}"
     add_command += f" -account {config_dict['PROJECT']}"
@@ -402,31 +403,25 @@ def add_filter_job(WORKFLOW, RUN, root_files, input_dir, config_dict):
     # Add all ROOT files as inputs
     for root_file in root_files:
         filename = os.path.basename(root_file)
-        add_command += f" -input {filename} file:{root_file}"
+        add_command += f" -input {filename} {input_type}:{root_file}"
 
     add_command += f" -stdout {LOG_DIR}/stdout_{RUNNO}.out"
     add_command += f" -stderr {LOG_DIR}/stderr_{RUNNO}.err"
     add_command += f" -tag run_number {RUNNO} -tag num_input_files {len(root_files)}"
 
-    input_filenames = " ".join([os.path.basename(f) for f in root_files])
-
     if config_dict['ENVFILE'].endswith('.csh'):
         command = f"tcsh -c 'cd $PWD && "
         command += f"source {config_dict['ENVFILE']} && "
         command += f"mkdir -p {OUTDIR_RUN} && "
-        command += f"hadd -f {MERGED_FILE} {input_filenames} && "
-        command += f"{config_dict['FILTER_EXEC']} {MERGED_FILE} "
+        command += f"{config_dict['FILTER_EXEC']} {FILTER_INPUTS} "
         command += filter_options
-        command += f"-o {OUTDIR_RUN}/{FILTERED_FILE} && "
-        command += f"cp {MERGED_FILE} {OUTDIR_RUN}/'"
+        command += f"-o {OUTDIR_RUN}/{FILTERED_FILE}'"
     else:
         command = f"source {config_dict['ENVFILE']} && "
         command += f"mkdir -p {OUTDIR_RUN} && "
-        command += f"hadd -f {MERGED_FILE} {input_filenames} && "
-        command += f"{config_dict['FILTER_EXEC']} {MERGED_FILE} "
+        command += f"{config_dict['FILTER_EXEC']} {FILTER_INPUTS} "
         command += filter_options
-        command += f"-o {OUTDIR_RUN}/{FILTERED_FILE} && "
-        command += f"cp {MERGED_FILE} {OUTDIR_RUN}/"
+        command += f"-o {OUTDIR_RUN}/{FILTERED_FILE}"
 
     add_command += f" {command}"
 
