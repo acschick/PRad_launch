@@ -2,7 +2,7 @@
 
 """
 PRad2 Replay Launcher - SWIF2 workflow submission
-Adapted from launch.py for PRad2 replay workflow
+Andrew Schick
 
 Usage: prad_launch.py config_file minrun maxrun [options]
 """
