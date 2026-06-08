@@ -605,25 +605,31 @@ def main(argv):
     for RUN in run_list:
         FORMATTED_RUN = f"{RUN:06d}"
 
-        print(f"\nProcessing run {FORMATTED_RUN}")
-
         # Input directory path
         input_dir = f"{INDATA_TOPDIR}/prad_{FORMATTED_RUN}" if MODE == "replay" else f"{INDATA_TOPDIR}/{FORMATTED_RUN}"
-        print(f"  Input directory: {input_dir}")
+        if VERBOSE:
+            print(f"\nProcessing run {FORMATTED_RUN}")
+            print(f"  Input directory: {input_dir}")
 
         if MODE == "replay":
             # Determine if this is MSS (tape) or disk
             is_mss = input_dir.startswith("/mss/")
             input_type = "mss" if is_mss else "file"
-            print(f"  Input type: {input_type}")
+            if VERBOSE:
+                print(f"  Input type: {input_type}")
 
             # Find files
             file_list = find_files(input_dir, mode="replay")
-            print(f"  Found {len(file_list)} files")
 
             if len(file_list) == 0:
-                print(f"  WARNING: No files found for run {FORMATTED_RUN}")
+                if VERBOSE:
+                    print(f"  No files found for run {FORMATTED_RUN}, skipping")
                 continue
+
+            print(f"\nProcessing run {FORMATTED_RUN}")
+            print(f"  Input directory: {input_dir}")
+            print(f"  Input type: {input_type}")
+            print(f"  Found {len(file_list)} files")
 
             # Batch files
             file_batches = [file_list[i:i+FILES_PER_JOB] for i in range(0, len(file_list), FILES_PER_JOB)]
@@ -636,15 +642,20 @@ def main(argv):
         else:
             # Filter mode: one job per run
             if not os.path.isdir(input_dir):
-                print(f"  WARNING: Directory not found, skipping")
+                if VERBOSE:
+                    print(f"  Directory not found, skipping")
                 continue
 
             root_files = find_files(input_dir, mode="filter")
-            print(f"  Found {len(root_files)} ROOT files")
 
             if len(root_files) == 0:
-                print(f"  WARNING: No ROOT files found")
+                if VERBOSE:
+                    print(f"  No ROOT files found, skipping")
                 continue
+
+            print(f"\nProcessing run {FORMATTED_RUN}")
+            print(f"  Input directory: {input_dir}")
+            print(f"  Found {len(root_files)} ROOT files")
 
             if add_filter_job(WORKFLOW, RUN, root_files, input_dir, config_dict):
                 total_jobs += 1
