@@ -253,6 +253,13 @@ def get_filter_options(config_dict):
 
     return filter_options
 
+def write_job_script(script_path, lines):
+    """Write the small script that SWIF2 will run on the farm node"""
+    with open(script_path, 'w') as outfile:
+        outfile.write("\n".join(lines))
+        outfile.write("\n")
+    os.chmod(script_path, 0o755)
+
 ######################################################## ADD JOB #########################################################
 
 def add_job(WORKFLOW, filepath, input_dir, config_dict):
@@ -302,6 +309,12 @@ def add_job(WORKFLOW, filepath, input_dir, config_dict):
     # Input file (SWIF2 handles jcache automatically for MSS)
     add_command += f" -input {FILENAME} {input_type}:{filepath}"
 
+    # Job script
+    script_ext = "csh" if config_dict['ENVFILE'].endswith('.csh') else "sh"
+    SCRIPT_NAME = f"run_{RUNNO}_{FILENO}.{script_ext}"
+    SCRIPT_PATH = os.path.join(LOG_DIR, SCRIPT_NAME)
+    add_command += f" -input {SCRIPT_NAME} file:{SCRIPT_PATH}"
+
     # Stdout, stderr
     add_command += f" -stdout {LOG_DIR}/stdout_{RUNNO}_{FILENO}.out"
     add_command += f" -stderr {LOG_DIR}/stderr_{RUNNO}_{FILENO}.err"
@@ -309,35 +322,39 @@ def add_job(WORKFLOW, filepath, input_dir, config_dict):
     # Tags
     add_command += f" -tag run_number {RUNNO} -tag file_number {FILENO}"
 
-    # The command to run: handle environment setup based on file type
-    # Note: SWIF2 stages the input file in the local scratch directory (usually $PWD)
-    # We need to make sure we're working in that directory
-
-    # Check if environment file is csh/tcsh
+    # Write the command in a staged script.  This keeps tcsh syntax out of the swif2 command line.
     if config_dict['ENVFILE'].endswith('.csh'):
-        # Use tcsh to source csh files - make sure we're in the right directory
-        add_command += " -shell /bin/tcsh"
-        command = f"cd $PWD && "
-        command += f"echo \"Working directory: $PWD\" && "
-        command += f"echo \"Files present:\" && ls -lh {FILENAME} && "
-        command += f"source {config_dict['ENVFILE']} && "
-        command += f"mkdir -p {OUTDIR_RUN} && "
-        command += f"{config_dict['REPLAY_EXEC']} $PWD/{FILENAME} "
-        command += f"-j {config_dict['NCORES']} "
-        command += replay_options
-        command += f"-o {OUTDIR_RUN}/"
+        script_lines = [
+            "#!/bin/tcsh",
+            "cd $PWD",
+            "if ($status != 0) exit $status",
+            "echo \"Working directory: $PWD\"",
+            "echo \"Files present:\"",
+            f"ls -lh {FILENAME}",
+            "if ($status != 0) exit $status",
+            f"source {config_dict['ENVFILE']}",
+            "if ($status != 0) exit $status",
+            f"mkdir -p {OUTDIR_RUN}",
+            "if ($status != 0) exit $status",
+            f"{config_dict['REPLAY_EXEC']} $PWD/{FILENAME} -j {config_dict['NCORES']} {replay_options}-o {OUTDIR_RUN}/",
+            "if ($status != 0) exit $status",
+        ]
+        command = f"tcsh {SCRIPT_NAME}"
     else:
-        # Assume bash/sh syntax
-        add_command += " -shell /bin/bash"
-        command = f"echo \"Working directory: $PWD\" && "
-        command += f"echo \"Files present:\" && ls -lh {FILENAME} && "
-        command += f"source {config_dict['ENVFILE']} && "
-        command += f"mkdir -p {OUTDIR_RUN} && "
-        command += f"{config_dict['REPLAY_EXEC']} {FILENAME} "
-        command += f"-j {config_dict['NCORES']} "
-        command += replay_options
-        command += f"-o {OUTDIR_RUN}/"
+        script_lines = [
+            "#!/bin/bash",
+            "set -e",
+            "cd \"$PWD\"",
+            "echo \"Working directory: $PWD\"",
+            "echo \"Files present:\"",
+            f"ls -lh {FILENAME}",
+            f"source {config_dict['ENVFILE']}",
+            f"mkdir -p {OUTDIR_RUN}",
+            f"{config_dict['REPLAY_EXEC']} {FILENAME} -j {config_dict['NCORES']} {replay_options}-o {OUTDIR_RUN}/",
+        ]
+        command = f"bash {SCRIPT_NAME}"
 
+    write_job_script(SCRIPT_PATH, script_lines)
     add_command += f" {command}"
 
     if VERBOSE:
@@ -408,6 +425,12 @@ def add_job_batch(WORKFLOW, filepaths, input_dir, RUN, batch_idx, config_dict):
         filename = os.path.basename(filepath)
         add_command += f" -input {filename} {input_type}:{filepath}"
 
+    # Job script
+    script_ext = "csh" if config_dict['ENVFILE'].endswith('.csh') else "sh"
+    SCRIPT_NAME = f"run_{RUNNO}_batch{batch_idx:03d}.{script_ext}"
+    SCRIPT_PATH = os.path.join(LOG_DIR, SCRIPT_NAME)
+    add_command += f" -input {SCRIPT_NAME} file:{SCRIPT_PATH}"
+
     # Stdout, stderr
     add_command += f" -stdout {LOG_DIR}/stdout_{RUNNO}_batch{batch_idx:03d}.out"
     add_command += f" -stderr {LOG_DIR}/stderr_{RUNNO}_batch{batch_idx:03d}.err"
@@ -415,48 +438,51 @@ def add_job_batch(WORKFLOW, filepaths, input_dir, RUN, batch_idx, config_dict):
     # Tags
     add_command += f" -tag run_number {RUNNO} -tag batch_index {batch_idx} -tag num_files {len(filepaths)}"
 
-    # The command to run: loop over all files in the batch
-    # Build a list of just filenames (they'll be staged locally by SWIF2)
+    # The files will be staged locally by SWIF2.
     filenames = [os.path.basename(fp) for fp in filepaths]
     filenames_str = " ".join(filenames)
 
-    # Check if environment file is csh/tcsh
+    # Write the loop in a staged script.  This keeps tcsh foreach syntax out of the swif2 command line.
     if config_dict['ENVFILE'].endswith('.csh'):
-        # Use tcsh to source csh files
-        add_command += " -shell /bin/tcsh"
-        command = f"cd $PWD && "
-        command += f"echo \"Working directory: $PWD\" && "
-        command += f"echo \"Files to process: {len(filenames)}\" && "
-        command += f"ls -lh prad*.evio.* && "
-        command += f"source {config_dict['ENVFILE']} && "
-        command += f"mkdir -p {OUTDIR_RUN} && "
-        # Process each file
-        command += f"foreach file ( {filenames_str} ); "
-        command += f"echo \"Processing $file\" && "
-        command += f"{config_dict['REPLAY_EXEC']} $PWD/$file "
-        command += f"-j {config_dict['NCORES']} "
-        command += replay_options
-        command += f"-o {OUTDIR_RUN}/ && "
-        command += f"echo \"Completed $file\"; "
-        command += f"end"
+        script_lines = [
+            "#!/bin/tcsh",
+            "cd $PWD",
+            "if ($status != 0) exit $status",
+            "echo \"Working directory: $PWD\"",
+            f"echo \"Files to process: {len(filenames)}\"",
+            "ls -lh prad*.evio.*",
+            "if ($status != 0) exit $status",
+            f"source {config_dict['ENVFILE']}",
+            "if ($status != 0) exit $status",
+            f"mkdir -p {OUTDIR_RUN}",
+            "if ($status != 0) exit $status",
+            f"foreach file ( {filenames_str} )",
+            "    echo \"Processing $file\"",
+            f"    {config_dict['REPLAY_EXEC']} $PWD/$file -j {config_dict['NCORES']} {replay_options}-o {OUTDIR_RUN}/",
+            "    if ($status != 0) exit $status",
+            "    echo \"Completed $file\"",
+            "end",
+        ]
+        command = f"tcsh {SCRIPT_NAME}"
     else:
-        # Assume bash/sh syntax
-        add_command += " -shell /bin/bash"
-        command = f"echo \"Working directory: $PWD\" && "
-        command += f"echo \"Files to process: {len(filenames)}\" && "
-        command += f"ls -lh prad*.evio.* && "
-        command += f"source {config_dict['ENVFILE']} && "
-        command += f"mkdir -p {OUTDIR_RUN} && "
-        # Process each file
-        command += f"for file in {filenames_str}; do "
-        command += f"echo \"Processing $file\" && "
-        command += f"{config_dict['REPLAY_EXEC']} $file "
-        command += f"-j {config_dict['NCORES']} "
-        command += replay_options
-        command += f"-o {OUTDIR_RUN}/ && "
-        command += f"echo \"Completed $file\"; "
-        command += f"done"
+        script_lines = [
+            "#!/bin/bash",
+            "set -e",
+            "cd \"$PWD\"",
+            "echo \"Working directory: $PWD\"",
+            f"echo \"Files to process: {len(filenames)}\"",
+            "ls -lh prad*.evio.*",
+            f"source {config_dict['ENVFILE']}",
+            f"mkdir -p {OUTDIR_RUN}",
+            f"for file in {filenames_str}; do",
+            "    echo \"Processing $file\"",
+            f"    {config_dict['REPLAY_EXEC']} $file -j {config_dict['NCORES']} {replay_options}-o {OUTDIR_RUN}/",
+            "    echo \"Completed $file\"",
+            "done",
+        ]
+        command = f"bash {SCRIPT_NAME}"
 
+    write_job_script(SCRIPT_PATH, script_lines)
     add_command += f" {command}"
 
     if VERBOSE:
@@ -496,26 +522,40 @@ def add_filter_job(WORKFLOW, RUN, root_files, input_dir, config_dict):
         filename = os.path.basename(root_file)
         add_command += f" -input {filename} {input_type}:{root_file}"
 
+    script_ext = "csh" if config_dict['ENVFILE'].endswith('.csh') else "sh"
+    SCRIPT_NAME = f"run_{RUNNO}_filter.{script_ext}"
+    SCRIPT_PATH = os.path.join(LOG_DIR, SCRIPT_NAME)
+    add_command += f" -input {SCRIPT_NAME} file:{SCRIPT_PATH}"
+
     add_command += f" -stdout {LOG_DIR}/stdout_{RUNNO}.out"
     add_command += f" -stderr {LOG_DIR}/stderr_{RUNNO}.err"
     add_command += f" -tag run_number {RUNNO} -tag num_input_files {len(root_files)}"
 
     if config_dict['ENVFILE'].endswith('.csh'):
-        add_command += " -shell /bin/tcsh"
-        command = f"cd $PWD && "
-        command += f"source {config_dict['ENVFILE']} && "
-        command += f"mkdir -p {OUTDIR_RUN} && "
-        command += f"{config_dict['FILTER_EXEC']} {FILTER_INPUTS} "
-        command += filter_options
-        command += f"-o {OUTDIR_RUN}/{FILTERED_FILE}"
+        script_lines = [
+            "#!/bin/tcsh",
+            "cd $PWD",
+            "if ($status != 0) exit $status",
+            f"source {config_dict['ENVFILE']}",
+            "if ($status != 0) exit $status",
+            f"mkdir -p {OUTDIR_RUN}",
+            "if ($status != 0) exit $status",
+            f"{config_dict['FILTER_EXEC']} {FILTER_INPUTS} {filter_options}-o {OUTDIR_RUN}/{FILTERED_FILE}",
+            "if ($status != 0) exit $status",
+        ]
+        command = f"tcsh {SCRIPT_NAME}"
     else:
-        add_command += " -shell /bin/bash"
-        command = f"source {config_dict['ENVFILE']} && "
-        command += f"mkdir -p {OUTDIR_RUN} && "
-        command += f"{config_dict['FILTER_EXEC']} {FILTER_INPUTS} "
-        command += filter_options
-        command += f"-o {OUTDIR_RUN}/{FILTERED_FILE}"
+        script_lines = [
+            "#!/bin/bash",
+            "set -e",
+            "cd \"$PWD\"",
+            f"source {config_dict['ENVFILE']}",
+            f"mkdir -p {OUTDIR_RUN}",
+            f"{config_dict['FILTER_EXEC']} {FILTER_INPUTS} {filter_options}-o {OUTDIR_RUN}/{FILTERED_FILE}",
+        ]
+        command = f"bash {SCRIPT_NAME}"
 
+    write_job_script(SCRIPT_PATH, script_lines)
     add_command += f" {command}"
 
     success = try_command(add_command)
