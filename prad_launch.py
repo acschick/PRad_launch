@@ -377,9 +377,26 @@ def add_job_batch(WORKFLOW, filepaths, input_dir, RUN, batch_idx, config_dict):
     add_command += f" -partition {config_dict['TRACK']}"
     add_command += f" -os {config_dict['OS']}"
 
-    # Resources (may need more disk/RAM for batched jobs)
+    # Resources - calculate disk dynamically based on batch size
+    disk_per_file = config_dict.get('DISK_PER_FILE', '2.5GB')
+    disk_overhead = config_dict.get('DISK_OVERHEAD', '15GB')
+    max_disk = config_dict.get('DISK', '220GB')
+    
+    # Parse numeric values (strip GB/MB suffix)
+    def parse_disk(s):
+        s = s.upper()
+        if 'GB' in s:
+            return int(float(s.replace('GB', '')))
+        elif 'MB' in s:
+            return int(float(s.replace('MB', '')) / 1024)
+        return int(s)
+    
+    disk_needed = parse_disk(disk_per_file) * len(filepaths) + parse_disk(disk_overhead)
+    disk_cap = parse_disk(max_disk)
+    disk_request = min(disk_needed, disk_cap)
+    
     add_command += f" -cores {config_dict['NCORES']}"
-    add_command += f" -disk {config_dict['DISK']}"
+    add_command += f" -disk {disk_request}GB"
     add_command += f" -ram {config_dict['RAM']}"
     add_command += f" -time {config_dict['TIMELIMIT']}"
 
