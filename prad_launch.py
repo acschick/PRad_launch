@@ -13,6 +13,7 @@ import sys
 import time
 import glob
 import re
+import shlex
 import subprocess
 from subprocess import Popen, PIPE
 
@@ -27,7 +28,7 @@ def try_command(command, sleeptime=5):
     retries = 0
 
     while return_code != 0 and retries < max_retries:
-        process = Popen(command.split(), stdout=PIPE, stderr=PIPE)
+        process = Popen(shlex.split(command), stdout=PIPE, stderr=PIPE)
         output, error = process.communicate()
         if output:
             print(output.decode())
@@ -59,7 +60,7 @@ def create_workflow(WORKFLOW, sleeptime=5):
     retries = 0
 
     while retries < max_retries:
-        process = Popen(create_command.split(), stdout=PIPE, stderr=PIPE)
+        process = Popen(shlex.split(create_command), stdout=PIPE, stderr=PIPE)
         output, error = process.communicate()
         if output:
             print(output.decode())
@@ -70,7 +71,7 @@ def create_workflow(WORKFLOW, sleeptime=5):
             return True
 
         # If create failed because the workflow already exists, status should work.
-        status_process = Popen(status_command.split(), stdout=PIPE, stderr=PIPE)
+        status_process = Popen(shlex.split(status_command), stdout=PIPE, stderr=PIPE)
         status_output, status_error = status_process.communicate()
         if status_process.returncode == 0:
             print(f"Workflow already exists: {WORKFLOW}")
