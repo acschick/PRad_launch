@@ -316,7 +316,8 @@ def add_job(WORKFLOW, filepath, input_dir, config_dict):
     # Check if environment file is csh/tcsh
     if config_dict['ENVFILE'].endswith('.csh'):
         # Use tcsh to source csh files - make sure we're in the right directory
-        command = f"tcsh -c 'cd $PWD && "
+        add_command += " -shell /bin/tcsh"
+        command = f"cd $PWD && "
         command += f"echo \"Working directory: $PWD\" && "
         command += f"echo \"Files present:\" && ls -lh {FILENAME} && "
         command += f"source {config_dict['ENVFILE']} && "
@@ -324,9 +325,10 @@ def add_job(WORKFLOW, filepath, input_dir, config_dict):
         command += f"{config_dict['REPLAY_EXEC']} $PWD/{FILENAME} "
         command += f"-j {config_dict['NCORES']} "
         command += replay_options
-        command += f"-o {OUTDIR_RUN}/'"
+        command += f"-o {OUTDIR_RUN}/"
     else:
         # Assume bash/sh syntax
+        add_command += " -shell /bin/bash"
         command = f"echo \"Working directory: $PWD\" && "
         command += f"echo \"Files present:\" && ls -lh {FILENAME} && "
         command += f"source {config_dict['ENVFILE']} && "
@@ -421,7 +423,8 @@ def add_job_batch(WORKFLOW, filepaths, input_dir, RUN, batch_idx, config_dict):
     # Check if environment file is csh/tcsh
     if config_dict['ENVFILE'].endswith('.csh'):
         # Use tcsh to source csh files
-        command = f"tcsh -c 'cd $PWD && "
+        add_command += " -shell /bin/tcsh"
+        command = f"cd $PWD && "
         command += f"echo \"Working directory: $PWD\" && "
         command += f"echo \"Files to process: {len(filenames)}\" && "
         command += f"ls -lh prad*.evio.* && "
@@ -435,9 +438,10 @@ def add_job_batch(WORKFLOW, filepaths, input_dir, RUN, batch_idx, config_dict):
         command += replay_options
         command += f"-o {OUTDIR_RUN}/ && "
         command += f"echo \"Completed $file\"; "
-        command += f"end'"
+        command += f"end"
     else:
         # Assume bash/sh syntax
+        add_command += " -shell /bin/bash"
         command = f"echo \"Working directory: $PWD\" && "
         command += f"echo \"Files to process: {len(filenames)}\" && "
         command += f"ls -lh prad*.evio.* && "
@@ -497,13 +501,15 @@ def add_filter_job(WORKFLOW, RUN, root_files, input_dir, config_dict):
     add_command += f" -tag run_number {RUNNO} -tag num_input_files {len(root_files)}"
 
     if config_dict['ENVFILE'].endswith('.csh'):
-        command = f"tcsh -c 'cd $PWD && "
+        add_command += " -shell /bin/tcsh"
+        command = f"cd $PWD && "
         command += f"source {config_dict['ENVFILE']} && "
         command += f"mkdir -p {OUTDIR_RUN} && "
         command += f"{config_dict['FILTER_EXEC']} {FILTER_INPUTS} "
         command += filter_options
-        command += f"-o {OUTDIR_RUN}/{FILTERED_FILE}'"
+        command += f"-o {OUTDIR_RUN}/{FILTERED_FILE}"
     else:
+        add_command += " -shell /bin/bash"
         command = f"source {config_dict['ENVFILE']} && "
         command += f"mkdir -p {OUTDIR_RUN} && "
         command += f"{config_dict['FILTER_EXEC']} {FILTER_INPUTS} "
