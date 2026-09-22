@@ -156,9 +156,10 @@ def validate_config(config_dict):
         print("ERROR: ENVIRONMENT NOT FULLY SPECIFIED IN CONFIG FILE. ABORTING")
         sys.exit(1)
 
-    # Check for either REPLAY_EXEC or FILTER_EXEC
-    if ("REPLAY_EXEC" not in config_dict) and ("FILTER_EXEC" not in config_dict):
-        print("ERROR: Must specify either REPLAY_EXEC or FILTER_EXEC in config file. ABORTING")
+    # Check for exactly one executable mode.
+    executable_keys = [key for key in ("REPLAY_EXEC", "FILTER_EXEC", "GAINCORR_EXEC") if key in config_dict]
+    if len(executable_keys) != 1:
+        print("ERROR: Specify exactly one of REPLAY_EXEC, FILTER_EXEC, or GAINCORR_EXEC. ABORTING")
         sys.exit(1)
 
     # FILE INPUT, OUTPUT BASE DIRECTORIES
@@ -178,6 +179,10 @@ def validate_config(config_dict):
 
     if "FILTER_EXEC" in config_dict and not os.path.isfile(config_dict["FILTER_EXEC"]):
         print(f"ERROR: FILTER_EXEC does not exist: {config_dict['FILTER_EXEC']}")
+        sys.exit(1)
+
+    if "GAINCORR_EXEC" in config_dict and not os.path.isfile(config_dict["GAINCORR_EXEC"]):
+        print(f"ERROR: GAINCORR_EXEC does not exist: {config_dict['GAINCORR_EXEC']}")
         sys.exit(1)
 
     if "CUTS_JSON" in config_dict and not os.path.isfile(config_dict["CUTS_JSON"]):
@@ -252,6 +257,15 @@ def get_filter_options(config_dict):
         filter_options += f"-c {config_dict['CUTS_JSON']} "
 
     return filter_options
+
+def get_gaincorr_options(config_dict):
+    """Build gain-correction executable arguments from config"""
+    gaincorr_options = f"-b {config_dict.get('GAIN_CORR_BATCH', '4000')} "
+
+    if config_dict.get("GAIN_CORR_SUMMARY", "1").lower() in ["1", "true", "yes", "on"]:
+        gaincorr_options += "-s "
+
+    return gaincorr_options
 
 def write_job_script(script_path, lines):
     """Write the small script that SWIF2 will run on the farm node"""
@@ -493,6 +507,90 @@ def add_job_batch(WORKFLOW, filepaths, input_dir, RUN, batch_idx, config_dict):
     if success:
         print(f"  Added batch job: {JOBNAME} ({len(filepaths)} files)")
     return success
+
+def add_gaincorr_job_batch(WORKFLOW, filepaths, input_dir, RUN, batch_idx, config_dict):
+    """Add a gain-correction job that processes one staged EVIO batch as a directory."""
+    if not filepaths:
+        return False
+
+    RUNNO = f"{RUN:06d}"
+    JOBNAME = f"{WORKFLOW}_run{RUNNO}_batch{batch_idx:03d}"
+    input_type = "mss" if input_dir.startswith("/mss/") else "file"
+    OUTDIR_BATCH = os.path.join(config_dict["OUTDIR_LARGE"], RUNNO, f"batch_{batch_idx:03d}")
+    LOG_DIR = os.path.join(config_dict["OUTDIR_SMALL"], "log", RUNNO)
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    def parse_disk_gb(value):
+        value = value.upper()
+        if value.endswith("GB"):
+            return int(float(value[:-2]))
+        if value.endswith("MB"):
+            return max(1, int(float(value[:-2]) / 1024))
+        return int(value)
+
+    disk_request = min(
+        parse_disk_gb(config_dict.get("DISK_PER_FILE", "2.5GB")) * len(filepaths)
+        + parse_disk_gb(config_dict.get("DISK_OVERHEAD", "15GB")),
+        parse_disk_gb(config_dict["DISK"]),
+    )
+
+    add_command = f"swif2 add-job -workflow {WORKFLOW} -name {JOBNAME}"
+    add_command += f" -account {config_dict['PROJECT']}"
+    add_command += f" -partition {config_dict['TRACK']}"
+    add_command += f" -os {config_dict['OS']}"
+    add_command += f" -cores {config_dict['NCORES']}"
+    add_command += f" -disk {disk_request}GB"
+    add_command += f" -ram {config_dict['RAM']}"
+    add_command += f" -time {config_dict['TIMELIMIT']}"
+
+    for filepath in filepaths:
+        filename = os.path.basename(filepath)
+        add_command += f" -input {filename} {input_type}:{filepath}"
+
+    script_ext = "csh" if config_dict["ENVFILE"].endswith(".csh") else "sh"
+    script_name = f"run_{RUNNO}_gaincorr_batch{batch_idx:03d}.{script_ext}"
+    script_path = os.path.join(LOG_DIR, script_name)
+    add_command += f" -input {script_name} file:{script_path}"
+    add_command += f" -stdout {LOG_DIR}/stdout_{RUNNO}_batch{batch_idx:03d}.out"
+    add_command += f" -stderr {LOG_DIR}/stderr_{RUNNO}_batch{batch_idx:03d}.err"
+    add_command += f" -tag run_number {RUNNO} -tag batch_index {batch_idx} -tag num_files {len(filepaths)}"
+
+    gaincorr_options = get_gaincorr_options(config_dict)
+    if config_dict["ENVFILE"].endswith(".csh"):
+        script_lines = [
+            "#!/bin/tcsh",
+            "cd $PWD",
+            "if ($status != 0) exit $status",
+            f"source {config_dict['ENVFILE']}",
+            "if ($status != 0) exit $status",
+            f"mkdir -p {OUTDIR_BATCH}",
+            "if ($status != 0) exit $status",
+            f"{config_dict['GAINCORR_EXEC']} $PWD -o {OUTDIR_BATCH} -j {config_dict['NCORES']} {gaincorr_options}",
+            "if ($status != 0) exit $status",
+        ]
+        command = f"tcsh {script_name}"
+    else:
+        script_lines = [
+            "#!/bin/bash",
+            "set -e",
+            "cd \"$PWD\"",
+            f"source {config_dict['ENVFILE']}",
+            f"mkdir -p {OUTDIR_BATCH}",
+            f"{config_dict['GAINCORR_EXEC']} \"$PWD\" -o {OUTDIR_BATCH} -j {config_dict['NCORES']} {gaincorr_options}",
+        ]
+        command = f"bash {script_name}"
+
+    write_job_script(script_path, script_lines)
+    add_command += f" {command}"
+
+    if VERBOSE:
+        print(f"  Gain-correction job command:\n  {add_command}")
+
+    success = try_command(add_command)
+    if success:
+        print(f"  Added gain-correction job: {JOBNAME} ({len(filepaths)} files)")
+    return success
+
 def add_filter_job(WORKFLOW, RUN, root_files, input_dir, config_dict):
     """Add filter job for one run - filters replay ROOT files directly"""
 
@@ -571,8 +669,8 @@ def main(argv):
     parser_usage = "prad_launch.py config_file minrun maxrun\n"
     parser_usage += "       OR\n"
     parser_usage += "       prad_launch.py config_file --runfile runs.txt\n\n"
-    parser_usage += "Create SWIF2 workflow for PRad2 replay or filter jobs\n"
-    parser_usage += "Mode is auto-detected from config (REPLAY_EXEC=replay, FILTER_EXEC=filter)\n\n"
+    parser_usage += "Create SWIF2 workflow for PRad2 replay, gain-correction, or filter jobs\n"
+    parser_usage += "Mode is auto-detected from config\n\n"
     parser_usage += "optional: -v: verbose output\n"
     parser_usage += "optional: --create-only: create workflow but don't submit\n"
     parser_usage += "optional: --runfile FILE: process runs listed in FILE (one per line)\n"
@@ -650,12 +748,17 @@ def main(argv):
     INDATA_TOPDIR = config_dict["INDATA_TOPDIR"]
     FILES_PER_JOB = int(config_dict.get("FILES_PER_JOB", "1"))
 
-    # Detect mode: replay or filter
-    MODE = "filter" if "FILTER_EXEC" in config_dict else "replay"
+    # Detect mode from the selected executable.
+    if "GAINCORR_EXEC" in config_dict:
+        MODE = "gaincorr"
+    elif "FILTER_EXEC" in config_dict:
+        MODE = "filter"
+    else:
+        MODE = "replay"
     print(f"\nMode: {MODE.upper()}")
 
     if VERBOSE:
-        if MODE == "replay":
+        if MODE in ("replay", "gaincorr"):
             print(f"Files per job: {FILES_PER_JOB}")
 
     # CREATE WORKFLOW
@@ -670,12 +773,12 @@ def main(argv):
         FORMATTED_RUN = f"{RUN:06d}"
 
         # Input directory path
-        input_dir = f"{INDATA_TOPDIR}/prad_{FORMATTED_RUN}" if MODE == "replay" else f"{INDATA_TOPDIR}/{FORMATTED_RUN}"
+        input_dir = f"{INDATA_TOPDIR}/prad_{FORMATTED_RUN}" if MODE in ("replay", "gaincorr") else f"{INDATA_TOPDIR}/{FORMATTED_RUN}"
         if VERBOSE:
             print(f"\nProcessing run {FORMATTED_RUN}")
             print(f"  Input directory: {input_dir}")
 
-        if MODE == "replay":
+        if MODE in ("replay", "gaincorr"):
             # Determine if this is MSS (tape) or disk
             is_mss = input_dir.startswith("/mss/")
             input_type = "mss" if is_mss else "file"
@@ -699,9 +802,10 @@ def main(argv):
             file_batches = [file_list[i:i+FILES_PER_JOB] for i in range(0, len(file_list), FILES_PER_JOB)]
             print(f"  Creating {len(file_batches)} job(s) ({FILES_PER_JOB} files/job)")
 
-            # Add a job for each batch
+            # Add a job for each batch.
             for batch_idx, batch in enumerate(file_batches):
-                if add_job_batch(WORKFLOW, batch, input_dir, RUN, batch_idx, config_dict):
+                add_job_function = add_gaincorr_job_batch if MODE == "gaincorr" else add_job_batch
+                if add_job_function(WORKFLOW, batch, input_dir, RUN, batch_idx, config_dict):
                     total_jobs += 1
         else:
             # Filter mode: one job per run
