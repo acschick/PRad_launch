@@ -117,7 +117,7 @@ def read_config(CONFIG_FILENAME):
 
 def resolve_config_paths(config_dict, config_dir):
     """Resolve relative paths for files shipped with or referenced by the config"""
-    path_keys = ["ENVFILE", "CUTS_JSON", "DAQ_CONFIG", "GEM_PED"]
+    path_keys = ["ENVFILE", "CUTS_JSON", "DAQ_CONFIG", "GEM_PED", "HYCAL_MAP"]
 
     for key in path_keys:
         if key not in config_dict:
@@ -197,6 +197,10 @@ def validate_config(config_dict):
         print(f"ERROR: GEM_PED does not exist: {config_dict['GEM_PED']}")
         sys.exit(1)
 
+    if "HYCAL_MAP" in config_dict and not os.path.isfile(config_dict["HYCAL_MAP"]):
+        print(f"ERROR: HYCAL_MAP does not exist: {config_dict['HYCAL_MAP']}")
+        sys.exit(1)
+
     # CHECK OUTPUT (SMALL) FOLDER EXISTENCE - create if needed
     if not os.path.isdir(config_dict["OUTDIR_SMALL"]):
         LOG_DIR = config_dict["OUTDIR_SMALL"] + "/log"
@@ -260,10 +264,28 @@ def get_filter_options(config_dict):
 
 def get_gaincorr_options(config_dict):
     """Build gain-correction executable arguments from config"""
-    gaincorr_options = f"-b {config_dict.get('GAIN_CORR_BATCH', '4000')} "
+    gaincorr_options = ""
+
+    if "MAX_FILES" in config_dict:
+        gaincorr_options += f"-f {config_dict['MAX_FILES']} "
+    if "DAQ_CONFIG" in config_dict:
+        gaincorr_options += f"-c {config_dict['DAQ_CONFIG']} "
+    if "HYCAL_MAP" in config_dict:
+        gaincorr_options += f"-d {config_dict['HYCAL_MAP']} "
+
+    gaincorr_options += f"-b {config_dict.get('GAIN_CORR_BATCH', '4000')} "
+
+    if "REFERENCE_RUN" in config_dict:
+        gaincorr_options += f"-r {config_dict['REFERENCE_RUN']} "
 
     if config_dict.get("GAIN_CORR_SUMMARY", "1").lower() in ["1", "true", "yes", "on"]:
         gaincorr_options += "-s "
+
+    if config_dict.get("GAIN_CORR_PLOTS", "0").lower() in ["1", "true", "yes", "on"]:
+        gaincorr_options += "-p "
+
+    if "GAIN_CORR_W_MODULES" in config_dict:
+        gaincorr_options += f"-w {config_dict['GAIN_CORR_W_MODULES']} "
 
     return gaincorr_options
 
